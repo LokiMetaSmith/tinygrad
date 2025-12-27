@@ -99,6 +99,7 @@ testing = [
   "ultralytics",
   "jiwer",
   "openai-whisper",
+  "bz2file",
 ]
 docs = [
   "mkdocs",

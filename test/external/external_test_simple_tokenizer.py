@@ -1,4 +1,6 @@
 import functools, multiprocessing
+import pytest
+pytest.importorskip("datasets")
 from transformers import AutoTokenizer
 from datasets import load_dataset
 from tinygrad.apps.llm import SimpleTokenizer
