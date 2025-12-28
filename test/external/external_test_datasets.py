@@ -1,3 +1,5 @@
+import pytest
+pytest.importorskip("nibabel")
 from extra.datasets.kits19 import iterate, preprocess
 from examples.mlperf.dataloader import batch_load_unet3d, batch_load_retinanet
 from test.external.mlperf_retinanet.coco_utils import get_openimages
