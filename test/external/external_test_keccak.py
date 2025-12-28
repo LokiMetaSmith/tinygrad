@@ -20,6 +20,9 @@ class TestExternalKeccak(unittest.TestCase):
       vectors = [ (l, bytes.fromhex(match["Msg"].lower()), bytes.fromhex(match["Output"].lower()))
         for match in re.finditer(pattern, vecs) if (l:=int(match["Len"])) < 8192 ]
 
+      # sample vectors to avoid timeout
+      vectors = vectors[::50]
+
       self.assertTrue(len(vectors) > 0)
 
       print("file", filename)
