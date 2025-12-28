@@ -1819,7 +1819,7 @@ class Tensor(OpMixin):
     rot_offsets_v0, rot_offsets_v1 =  ctensor([0] + [1 << v for v in rot_offsets]), ctensor([1] + [1 << (64 - v) for v in rot_offsets])
 
     # calculated from π step
-    reorder_indexes = ctensor([0,6,12,18,24,3,9,10,16,22,1,7,13,19,20,4,5,11,17,23,2,8,14,15,21], dtype=dtypes.int32)
+    reorder_indexes = [0,6,12,18,24,3,9,10,16,22,1,7,13,19,20,4,5,11,17,23,2,8,14,15,21]
     rnd_const_masks = [ctensor([v]).pad((0, 24)) for v in (1, 0x8082, 0x800000000000808a, 0x8000000080008000, 0x808b, 0x80000001, 0x8000000080008081,
     0x8000000000008009, 0x8a, 0x88, 0x80008009, 0x8000000a, 0x8000808b, 0x800000000000008b, 0x8000000000008089, 0x8000000000008003,
     0x8000000000008002, 0x8000000000000080, 0x800a, 0x800000008000000a, 0x8000000080008081, 0x8000000000008080, 0x80000001, 0x8000000080008008)]
@@ -1830,12 +1830,15 @@ class Tensor(OpMixin):
     data = data.pad((None, (0, data_pad))).reshape(bs := data.shape[0], -1, rate).pad((None, None, (0, 200 - rate)))
 
     # create pad mask
-    lbe = prod(data.shape[1:]) + rate - data_pad - 200
-    if data_pad == 1: mb = [(lbe, 0), (1, dsbyte ^ 0x80), (200 - rate, 0)]
-    else: mb = [(lbe, 0), (1, dsbyte), (data_pad - 2, 0), (1, 0x80), (200 - rate, 0)]
-    pad_mask = Tensor.cat(*(Tensor(v, dtype=dtypes.uint8, device=data.device).expand(l) for l, v in mb if l > 0)).unsqueeze(0)
+    total_len = data.shape[1] * 200
+    idx1 = (data.shape[1]-1)*200 + (rate - data_pad)
+    idx2 = (data.shape[1]-1)*200 + (rate - 1)
+    # use where to avoid cast/mul issues with one_hot
+    arange = Tensor.arange(total_len, dtype=dtypes.int32, device=data.device)
+    pad_mask = (arange == Tensor([idx1], device=data.device, dtype=dtypes.int32)).where(dsbyte, 0).cast(dtypes.uint8) ^ \
+               (arange == Tensor([idx2], device=data.device, dtype=dtypes.int32)).where(0x80, 0).cast(dtypes.uint8)
 
-    data = (data.flatten(1) ^ pad_mask).reshape(*data.shape[:2], 200).bitcast(dtypes.uint64)
+    data = (data.flatten(1) ^ pad_mask.unsqueeze(0)).reshape(*data.shape[:2], 200).bitcast(dtypes.uint64).contiguous()
 
     state = Tensor.zeros(bs, 25, device=self.device, dtype=dtypes.uint64)
     for k in range(int(data.shape[1])):
@@ -1846,12 +1849,13 @@ class Tensor(OpMixin):
         t1 = (p[:,:,0] ^ p[:,:,1] ^ p[:,:,2] ^ p[:,:,3] ^ p[:,:,4]).roll(-1, 1) # xor reduce
         state = state ^ (t1.roll(2, 1).bitwise_xor((t1 << 1) ^ (t1 >> 63)).unsqueeze(2).expand(bs, 5, 5).transpose(2, 1).flatten(1))
         # ρ and π steps
-        state = state[:, reorder_indexes]
+        state = Tensor.stack(*[state[:, i] for i in reorder_indexes], dim=1)
         state = (state * rot_offsets_v0).bitwise_or(state // rot_offsets_v1).reshape(bs, 5, 5)
         # χ and ι step
         state = state.bitwise_xor(~state.roll(shifts=-1, dims=2) & state.roll(shifts=-2, dims=2))
         state = state.flatten(1) ^ rnd_const_masks[i]
       # NOTE: there was a kernelize here to prevent internal stack from growing propotional to data size, do we need something else?
+      state = state.realize()
     return state.bitcast(dtypes.uint8)[:,:(obytes:=(200 - rate) // 2)].reshape(*self.shape[:-1], obytes)
 
   def _hash_1mb(self) -> Tensor:
