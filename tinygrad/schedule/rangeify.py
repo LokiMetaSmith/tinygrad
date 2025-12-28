@@ -134,11 +134,15 @@ def cleanup_dead_axes(b:UOp):
   new_rng = []
   hit = False
   reshape: list[sint] = []
+
+  # cache this
+  src_ranges = b.src[0].ranges
+
   for s,rng in zip(b.shape, b.src[1:]):
     # skip for symbolic. TODO: fix this
     if rng.op is Ops.RANGE and rng.src[0].op is not Ops.CONST: return None
     # CONSTs are already dead axes
-    if rng.op is Ops.CONST or (rng.op is Ops.RANGE and rng not in b.src[0].ranges):
+    if rng.op is Ops.CONST or (rng.op is Ops.RANGE and rng not in src_ranges):
       reshape.append(1)
       hit = True
     else:
