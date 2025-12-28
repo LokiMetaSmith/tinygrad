@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-import itertools
+import itertools, weakref
 from tinygrad.dtype import dtypes, PtrDType, ImageDType, AddrSpace
 from tinygrad.uop.ops import PatternMatcher, UPat, Ops, UOp, resolve, GroupOp, _substitute, KernelInfo
 from tinygrad.uop.ops import graph_rewrite, identity_element, sint, AxisType, BottomUpGate, Kernel, _remove_all_tags, range_str
@@ -155,6 +155,45 @@ def cleanup_dead_axes(b:UOp):
 def gate_substitute(ctx, b:UOp) -> None:
   if not any(r in b.ranges for r in ctx.keys()): raise BottomUpGate()
 pm_gate_substitute = PatternMatcher([(UPat(GroupOp.All, name="b"), gate_substitute)], compiled=False)
+
+_analysis_cache: weakref.WeakKeyDictionary[UOp, tuple[list[UOp], list[UOp], list[UOp], bool] | None] = weakref.WeakKeyDictionary()
+def get_analysis(src: UOp) -> tuple[list[UOp], list[UOp], list[UOp], bool] | None:
+  if (ret:=_analysis_cache.get(src)) is not None: return ret
+  accessed_buffers: list[UOp] = []
+  indexes: list[UOp] = []
+  reduces: list[UOp] = []
+  count = 0
+  try:
+    def red_gate(x:UOp):
+      nonlocal count
+      count += 1
+      if count > 5000: raise ValueError("Limit reached")
+      if x.op is Ops.BUFFERIZE and x.arg.addrspace == AddrSpace.GLOBAL:
+        accessed_buffers.append(x)
+        return False
+      if x.op is Ops.BUFFER:
+        accessed_buffers.append(x)
+      if x.op is Ops.INDEX:
+        indexes.append(x)
+      if x.op is Ops.REDUCE: reduces.append(x)
+      return True
+    src.toposort(gate=red_gate)
+  except ValueError:
+    _analysis_cache[src] = None
+    return None
+
+  accessed_buffers = dedup(accessed_buffers)
+
+  # if any reduces access a buffer, don't remove this buffer
+  buffer_in_reduce = False
+  def buf_gate(x:UOp):
+    nonlocal buffer_in_reduce
+    if x.op in {Ops.BUFFER, Ops.BUFFERIZE}: buffer_in_reduce = True
+    return not buffer_in_reduce
+  UOp.sink(*[x.src[0] for x in reduces]).toposort(gate=buf_gate)
+  _analysis_cache[src] = ret = (accessed_buffers, indexes, reduces, buffer_in_reduce)
+  return ret
+
 # if a buffer is being stored just for permutes or something, remove it
 # we want to reexpress the indexes of idx2 in terms of the implied b1
 def remove_bufferize(src:UOp, buf:UOp, idx:UOp):
@@ -169,35 +208,12 @@ def remove_bufferize(src:UOp, buf:UOp, idx:UOp):
   if src.op is not Ops.THREEFRY:
     # *** here is where we compute the cost ***
     # if we return None, the bufferize is kept
-
-    accessed_buffers: list[UOp] = []
-    indexes: list[UOp] = []
-    reduces: list[UOp] = []
-    def red_gate(x:UOp):
-      if x.op is Ops.BUFFERIZE and x.arg.addrspace == AddrSpace.GLOBAL:
-        accessed_buffers.append(x)
-        return False
-      if x.op is Ops.BUFFER:
-        accessed_buffers.append(x)
-      if x.op is Ops.INDEX:
-        indexes.append(x)
-      if x.op is Ops.REDUCE: reduces.append(x)
-      return True
-    src.toposort(gate=red_gate)
-    del red_gate
-    accessed_buffers = dedup(accessed_buffers)
+    if (analysis := get_analysis(src)) is None: return None
+    accessed_buffers, indexes, reduces, buffer_in_reduce = analysis
 
     # if this is generated from multiple buffers, don't remove this buffer
     if len(accessed_buffers) > 3 and not (PCONTIG > 2): return None
 
-    # if any reduces access a buffer, don't remove this buffer
-    buffer_in_reduce = False
-    def buf_gate(x:UOp):
-      nonlocal buffer_in_reduce
-      if x.op in {Ops.BUFFER, Ops.BUFFERIZE}: buffer_in_reduce = True
-      return not buffer_in_reduce
-    UOp.sink(*[x.src[0] for x in reduces]).toposort(gate=buf_gate)
-    del buf_gate
     if buffer_in_reduce:
       if PCONTIG > 2:
         out_in_ratio = (prod(buf.shape)+1) / (sum([x.size for x in accessed_buffers])+1)
