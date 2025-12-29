@@ -1,6 +1,7 @@
 import ctypes, subprocess, tempfile, unittest
 from tinygrad.helpers import WIN
 from tinygrad.runtime.support.c import Struct
+from tinygrad.runtime.support.compiler_cpu import get_cc
 
 class TestAutogen(unittest.TestCase):
   def test_packed_struct_sizeof(self):
@@ -38,7 +39,8 @@ class TestAutogen(unittest.TestCase):
     '''
     args = ('-x', 'c', '-fPIC', '-shared')
     with tempfile.NamedTemporaryFile(suffix=".so") as f:
-      subprocess.check_output(('clang',) + args + ('-', '-o', f.name), input=src.encode('utf-8'))
+      cc, _ = get_cc()
+      subprocess.check_output((cc,) + args + ('-', '-o', f.name), input=src.encode('utf-8'))
       b = Baz(0xAA000, 0x00BB0, 0, 1)
       test = ctypes.CDLL(f.name).test
       test.argtypes = [Baz]
@@ -67,7 +69,8 @@ class TestAutogen(unittest.TestCase):
     '''
     args = ('-x', 'c', '-fPIC', '-shared')
     with tempfile.NamedTemporaryFile(suffix=".so") as f:
-      subprocess.check_output(('clang',) + args + ('-', '-o', f.name), input=src.encode('utf-8'))
+      cc, _ = get_cc()
+      subprocess.check_output((cc,) + args + ('-', '-o', f.name), input=src.encode('utf-8'))
       test = ctypes.CDLL(f.name).test
       test.argtypes = [Baz]
       for i in range(8): self.assertEqual(test(Baz(*(j==i for j in range(8)))), i==2)
