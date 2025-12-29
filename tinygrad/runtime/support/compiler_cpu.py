@@ -45,8 +45,7 @@ class ClangJITCompiler(Compiler):
             raise
         with open(obj_path, "rb") as f: obj = f.read()
       except subprocess.CalledProcessError as e:
-        if e.stderr: raise RuntimeError(f"GCC failed:\n{e.stderr.decode()}") from e
-        raise
+        raise RuntimeError(f"GCC failed: {e.returncode}\nstdout: {e.stdout.decode() if e.stdout else ''}\nstderr: {e.stderr.decode() if e.stderr else ''}\nSource start:\n{src[:500]}") from e
       finally:
         os.unlink(obj_path)
     return jit_loader(obj)
