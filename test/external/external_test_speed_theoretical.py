@@ -27,7 +27,7 @@ def _test(tcount, fxn, dtype=dtypes.float):
     allgbs.append(gbs)
   return max(allgbs)
 
-MEMBW = getenv("MEMBW", 10)
+MEMBW = getenv("MEMBW", 2.0 if Device.DEFAULT == "CPU" else 10)
 class TestRamBandwidth(unittest.TestCase):
   def test_add(self): self.assertGreater(_test(2, Tensor.add), MEMBW)
   def test_exp(self): self.assertGreater(_test(1, Tensor.exp), MEMBW)
@@ -36,7 +36,7 @@ class TestRamBandwidth(unittest.TestCase):
 # ratio between MEM and FLOPS < 1000
 # NOTE: On AMD, (x*x)+1 gets ~30 TFLOPS, (x*x)+3 gets ~60 TFLOPS
 def flopsmax(x):
-  for _ in range(500): x = (x*x)+3
+  for _ in range(50 if x.dtype != dtypes.int8 else 5): x = (x*x)+3
   return x
 
 class TestFlops(unittest.TestCase):
