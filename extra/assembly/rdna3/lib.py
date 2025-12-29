@@ -40,8 +40,9 @@ bits = _Bits()
 
 # Register types
 class Reg:
-  def __init__(self, idx: int, count: int = 1, hi: bool = False): self.idx, self.count, self.hi = idx, count, hi
+  def __init__(self, idx: int, count: int = 1, hi: bool = False, neg: bool = False): self.idx, self.count, self.hi, self.neg = idx, count, hi, neg
   def __repr__(self): return f"{self.__class__.__name__.lower()[0]}[{self.idx}]" if self.count == 1 else f"{self.__class__.__name__.lower()[0]}[{self.idx}:{self.idx + self.count}]"
+  def __neg__(self): return self.__class__(self.idx, self.count, self.hi, neg=not self.neg)
 
 T = TypeVar('T', bound=Reg)
 class _RegFactory(Generic[T]):
@@ -51,7 +52,7 @@ class _RegFactory(Generic[T]):
   @overload
   def __getitem__(self, key: slice) -> Reg: ...
   def __getitem__(self, key: int | slice) -> Reg:
-    return self._cls(key.start, key.stop - key.start) if isinstance(key, slice) else self._cls(key)
+    return self._cls(key.start, key.stop - key.start + 1) if isinstance(key, slice) else self._cls(key)
   def __repr__(self): return f"<{self._name} factory>"
 
 class SGPR(Reg): pass
@@ -118,8 +119,30 @@ class Inst:
 
   def __init__(self, *args, literal: int | None = None, **kwargs):
     self._values, self._literal = dict(self._defaults), literal
-    self._values.update(zip([n for n in self._fields if n != 'encoding'], args))
-    self._values.update(kwargs)
+    # Map positional args to field names
+    field_names = [n for n in self._fields if n != 'encoding']
+    orig_args = dict(zip(field_names, args))
+    orig_args.update(kwargs)
+    self._values.update(orig_args)
+    # Validate register counts for SMEM instructions (before encoding)
+    if self.__class__.__name__ == 'SMEM':
+      op_val = orig_args.get(field_names[0]) if args else orig_args.get('op')
+      if op_val is not None:
+        if hasattr(op_val, 'value'): op_val = op_val.value
+        expected_cnt = {0:1, 1:2, 2:4, 3:8, 4:16, 8:1, 9:2, 10:4, 11:8, 12:16}.get(op_val)
+        sdata_val = orig_args.get('sdata')
+        if expected_cnt is not None and isinstance(sdata_val, Reg) and sdata_val.count != expected_cnt:
+          raise ValueError(f"SMEM op {op_val} expects {expected_cnt} registers, got {sdata_val.count}")
+    # Validate register counts for SOP1 instructions (b32 = 1 reg, b64 = 2 regs)
+    if self.__class__.__name__ == 'SOP1':
+      op_val = orig_args.get(field_names[0]) if args else orig_args.get('op')
+      if op_val is not None and hasattr(op_val, 'name'):
+        expected = 2 if op_val.name.endswith('_B64') else 1
+        sdst_val, ssrc0_val = orig_args.get('sdst'), orig_args.get('ssrc0')
+        if isinstance(sdst_val, Reg) and sdst_val.count != expected:
+          raise ValueError(f"SOP1 {op_val.name} expects {expected} destination register(s), got {sdst_val.count}")
+        if isinstance(ssrc0_val, Reg) and ssrc0_val.count != expected:
+          raise ValueError(f"SOP1 {op_val.name} expects {expected} source register(s), got {ssrc0_val.count}")
     # Type check and encode values
     for name, val in list(self._values.items()):
       if name == 'encoding': continue
@@ -140,9 +163,17 @@ class Inst:
       if name in SRC_FIELDS:
         encoded = encode_src(val)
         self._values[name] = RawImm(encoded)
+        # Handle negation modifier for VOP3 instructions
+        if isinstance(val, Reg) and val.neg and 'neg' in self._fields:
+          neg_bit = {'src0': 1, 'src1': 2, 'src2': 4}.get(name, 0)
+          cur_neg = self._values.get('neg', 0)
+          self._values['neg'] = (cur_neg.val if isinstance(cur_neg, RawImm) else cur_neg) | neg_bit
         # Track literal value if needed (encoded as 255)
         if encoded == 255 and self._literal is None and isinstance(val, int) and not isinstance(val, IntEnum):
           self._literal = val
+        elif encoded == 255 and self._literal is None and isinstance(val, float):
+          import struct
+          self._literal = struct.unpack('<I', struct.pack('<f', val))[0]
       # Encode raw register fields for consistent repr
       elif name in RAW_FIELDS:
         if isinstance(val, Reg): self._values[name] = _encode_reg(val)
@@ -208,6 +239,12 @@ class Inst:
              and not (is_zero(self._values[k]) and k not in {'op'})]
     lit = f", literal={hex(self._literal)}" if self._literal is not None else ""
     return f"{self.__class__.__name__}({', '.join(f'{k}={v}' for k, v in items)}{lit})"
+
+  def __eq__(self, other):
+    if not isinstance(other, Inst): return NotImplemented
+    return self.__class__ == other.__class__ and self._values == other._values and self._literal == other._literal
+
+  def __hash__(self): return hash((self.__class__.__name__, tuple(sorted((k, repr(v)) for k, v in self._values.items())), self._literal))
 
   def disasm(self) -> str:
     from extra.assembly.rdna3.asm import disasm

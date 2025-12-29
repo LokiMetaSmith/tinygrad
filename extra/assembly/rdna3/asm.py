@@ -259,8 +259,10 @@ def disasm(inst: Inst) -> str:
     else:
       is_16bit_op = any(x in op_name for x in _16BIT_TYPES) and not any(x in op_name for x in ('dot2', 'pk_', 'sad', 'msad', 'qsad', 'mqsad'))
       is_f16_dst = is_f16_src = is_f16_src2 = is_16bit_op
+    # Check if any opsel bit is set (any operand uses .h) - if so, we need explicit .l for low-half
+    any_hi = opsel != 0
     def fmt_vop3_src(v, neg_bit, abs_bit, hi_bit=False, reg_cnt=1, is_16=False):
-      s = _fmt_src_n(v, reg_cnt) if reg_cnt > 1 else f"v{v - 256}.h" if is_16 and v >= 256 and hi_bit else f"v{v - 256}.l" if is_16 and v >= 256 else fmt_src(v)
+      s = _fmt_src_n(v, reg_cnt) if reg_cnt > 1 else f"v{v - 256}.h" if is_16 and v >= 256 and hi_bit else f"v{v - 256}.l" if is_16 and v >= 256 and any_hi else fmt_src(v)
       if abs_bit: s = f"|{s}|"
       return f"-{s}" if neg_bit else s
     # Determine register count for each source (check for cvt-specific 64-bit flags first)
@@ -280,7 +282,7 @@ def disasm(inst: Inst) -> str:
     elif dst_cnt > 1:
       dst_str = _vreg(vdst, dst_cnt)
     elif is_f16_dst:
-      dst_str = f"v{vdst}.h" if (opsel & 8) else f"v{vdst}.l"
+      dst_str = f"v{vdst}.h" if (opsel & 8) else f"v{vdst}.l" if any_hi else f"v{vdst}"
     else:
       dst_str = f"v{vdst}"
     clamp_str = " clamp" if clmp else ""
@@ -434,7 +436,8 @@ def disasm(inst: Inst) -> str:
       if op_name == 's_swappc_b64': return f"{op_name} {_fmt_sdst(sdst, 2)}, {_fmt_ssrc(ssrc0, 2)}"
       if op_name in ('s_sendmsg_rtn_b32', 's_sendmsg_rtn_b64'):
         return f"{op_name} {_fmt_sdst(sdst, 2 if 'b64' in op_name else 1)}, sendmsg({MSG_NAMES.get(ssrc0, str(ssrc0))})"
-      return f"{op_name} {_fmt_sdst(sdst, dst_cnt)}, {_fmt_ssrc(ssrc0, src0_cnt)}"
+      ssrc0_str = fmt_src(ssrc0) if src0_cnt == 1 else _fmt_ssrc(ssrc0, src0_cnt)
+      return f"{op_name} {_fmt_sdst(sdst, dst_cnt)}, {ssrc0_str}"
     if cls_name == 'SOP2':
       sdst, ssrc0, ssrc1 = [unwrap(inst._values.get(f, 0)) for f in ('sdst', 'ssrc0', 'ssrc1')]
       return f"{op_name} {_fmt_sdst(sdst, dst_cnt)}, {_fmt_ssrc(ssrc0, src0_cnt)}, {_fmt_ssrc(ssrc1, src1_cnt)}"
@@ -476,7 +479,8 @@ def parse_operand(op: str) -> tuple:
     v = -int(m.group(1), 16) if op.startswith('-') else int(m.group(1), 16)
     return (v, neg, abs_, hi_half)
   if op in SPECIAL_REGS: return (SPECIAL_REGS[op], neg, abs_, hi_half)
-  if m := re.match(r'^([svt](?:tmp)?)\[(\d+):(\d+)\]$', op): return (REG_MAP[m.group(1)][int(m.group(2)):int(m.group(3))+1], neg, abs_, hi_half)
+  if op == 'lit': return (RawImm(255), neg, abs_, hi_half)  # literal marker (actual value comes from literal word)
+  if m := re.match(r'^([svt](?:tmp)?)\[(\d+):(\d+)\]$', op): return (REG_MAP[m.group(1)][int(m.group(2)):int(m.group(3))], neg, abs_, hi_half)
   if m := re.match(r'^([svt](?:tmp)?)(\d+)$', op):
     reg = REG_MAP[m.group(1)][int(m.group(2))]
     reg.hi = hi_half
