@@ -40,10 +40,13 @@ class ClangJITCompiler(Compiler):
         except subprocess.CalledProcessError:
           if arch in args:
             args.remove(arch)
-            subprocess.run([cc, '-c', '-x', 'c', *args, *arch_args, '-', '-o', obj_path], check=True, input=src.encode('utf-8'))
+            subprocess.run([cc, '-c', '-x', 'c', *args, *arch_args, '-', '-o', obj_path], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, input=src.encode('utf-8'))
           else:
             raise
         with open(obj_path, "rb") as f: obj = f.read()
+      except subprocess.CalledProcessError as e:
+        if e.stderr: raise RuntimeError(f"GCC failed:\n{e.stderr.decode()}") from e
+        raise
       finally:
         os.unlink(obj_path)
     return jit_loader(obj)
