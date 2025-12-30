@@ -247,6 +247,10 @@ class ClangRenderer(CStyleLanguage):
     (UPat((Ops.SQRT, Ops.TRUNC), name="alu"), no_vectorized_alu)]) + create_non_native_float_pats((dtypes.bfloat16,)) + pm_manual_bf16_cast + \
     CStyleLanguage.extra_matcher
 
+  string_rewrite = PatternMatcher([
+    (UPat(Ops.BITCAST, name="x"), lambda ctx,x: f"BITCAST({ctx.render_dtype(x.dtype)}, {ctx[x.src[0]]})"),
+  ]) + base_rewrite
+
   if sys.platform == 'win32':
     kernel_typedef = "__attribute__((ms_abi)) void"
   def render_vector_prefix(self, dt:DType) -> str:
@@ -256,7 +260,8 @@ class ClangRenderer(CStyleLanguage):
     return f"typedef {self.render_dtype(dt.scalar())} {self.render_dtype(dt)} __attribute__((aligned({alignment}),vector_size({sz})));"
 
   def _render_defines(self, uops) -> list[str]:
-    prefix = [self.render_vector_prefix(dt) for dt in uops_to_dtypes(uops) if dt.count > 1]
+    prefix = ["#define BITCAST(T, v) ({ union { typeof(v) src; T dst; } u; u.src = v; u.dst; })"] + \
+             [self.render_vector_prefix(dt) for dt in uops_to_dtypes(uops) if dt.count > 1]
     # https://github.com/corsix/amx
     for name, (N, M, _), dtype_in, _, _, _, _, _ in wmma_args(uops):
       prefix += [
